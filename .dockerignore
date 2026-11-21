@@ -1,0 +1,12 @@
+.git
+.env
+**/.env.local
+**/node_modules
+**/target
+**/.mvn-cache
+frontend
+**/.DS_Store
+**/__pycache__
+**/*.zip
+infrastructure/keycloak/generated
+infrastructure/nginx/certs

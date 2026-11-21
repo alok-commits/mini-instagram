@@ -1,0 +1,20 @@
+<configuration>
+ <springProperty scope="context" name="SERVICE_NAME" source="spring.application.name" defaultValue="unknown"/>
+ <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+   <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+     <customFields>{"service":"${SERVICE_NAME}"}</customFields>
+   </encoder>
+ </appender>
+ <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+   <file>/app/logs/${SERVICE_NAME}.json</file>
+   <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+     <customFields>{"service":"${SERVICE_NAME}"}</customFields>
+   </encoder>
+   <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+     <fileNamePattern>/app/logs/${SERVICE_NAME}.%d{yyyy-MM-dd}.json.gz</fileNamePattern>
+     <maxHistory>7</maxHistory>
+     <totalSizeCap>512MB</totalSizeCap>
+   </rollingPolicy>
+ </appender>
+ <root level="INFO"><appender-ref ref="CONSOLE"/><appender-ref ref="FILE"/></root>
+</configuration>

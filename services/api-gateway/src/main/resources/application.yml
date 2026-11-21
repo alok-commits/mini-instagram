@@ -1,0 +1,123 @@
+server:
+  port: 8080
+  shutdown: graceful
+spring:
+  application:
+    name: api-gateway
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+  cloud:
+    gateway:
+      server:
+        webflux:
+          default-filters:
+            - name: RequestSize
+              args:
+                maxSize: 64KB
+          routes:
+              - id: like-count
+                order: -30
+                uri: ${LIKE_COUNT_URI:http://like-service:8083}
+                predicates:
+                  - Path=/api/v1/posts/*/likes/count
+                  - Method=GET
+                filters:
+                  - name: RequestRateLimiter
+                    args:
+                      key-resolver: "#{@principalOrIpKeyResolver}"
+                      redis-rate-limiter.replenishRate: 2
+                      redis-rate-limiter.burstCapacity: 20
+                      redis-rate-limiter.requestedTokens: 1
+              - id: like-write
+                order: -29
+                uri: ${LIKE_WRITE_URI:http://like-service:8083}
+                predicates:
+                  - Path=/api/v1/posts/*/likes/me
+                  - Method=PUT,DELETE
+                filters:
+                  - name: RequestRateLimiter
+                    args:
+                      key-resolver: "#{@principalOrIpKeyResolver}"
+                      redis-rate-limiter.replenishRate: 1
+                      redis-rate-limiter.burstCapacity: 20
+                      redis-rate-limiter.requestedTokens: 1
+              - id: user
+                order: -20
+                uri: ${USER_URI:http://user-service:8081}
+                predicates:
+                  - Path=/api/v1/users/**
+                  - Method=GET,PATCH
+                filters:
+                  - name: RequestRateLimiter
+                    args:
+                      key-resolver: "#{@principalOrIpKeyResolver}"
+                      redis-rate-limiter.replenishRate: 1
+                      redis-rate-limiter.burstCapacity: 10
+                      redis-rate-limiter.requestedTokens: 1
+              - id: post-create
+                order: -10
+                uri: ${POST_CREATE_URI:http://post-service:8082}
+                predicates:
+                  - Path=/api/v1/posts
+                  - Method=POST
+                filters:
+                  - name: RequestRateLimiter
+                    args:
+                      key-resolver: "#{@principalOrIpKeyResolver}"
+                      redis-rate-limiter.replenishRate: 1
+                      redis-rate-limiter.burstCapacity: 60
+                      redis-rate-limiter.requestedTokens: 6
+              - id: post-read
+                order: 0
+                uri: ${POST_READ_URI:http://post-service:8082}
+                predicates:
+                  - Path=/api/v1/posts,/api/v1/posts/*
+                  - Method=GET
+                filters:
+                  - name: RequestRateLimiter
+                    args:
+                      key-resolver: "#{@principalOrIpKeyResolver}"
+                      redis-rate-limiter.replenishRate: 2
+                      redis-rate-limiter.burstCapacity: 20
+                      redis-rate-limiter.requestedTokens: 1
+              - id: post-change
+                order: 1
+                uri: ${POST_CHANGE_URI:http://post-service:8082}
+                predicates:
+                  - Path=/api/v1/posts/*
+                  - Method=PATCH,DELETE
+                filters:
+                  - name: RequestRateLimiter
+                    args:
+                      key-resolver: "#{@principalOrIpKeyResolver}"
+                      redis-rate-limiter.replenishRate: 1
+                      redis-rate-limiter.burstCapacity: 30
+                      redis-rate-limiter.requestedTokens: 1
+security:
+  issuer-uri: ${JWT_ISSUER:http://localhost:8180/realms/mini-instagram}
+  jwk-set-uri: ${JWT_JWKS:http://localhost:8180/realms/mini-instagram/protocol/openid-connect/certs}
+  audience: instagram-api
+frontend:
+  origin: ${FRONTEND_ORIGIN:http://localhost:5173}
+gateway:
+  trust-proxy-header: ${GATEWAY_TRUST_PROXY:false}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${TRACE_SAMPLE_RATE:1.0}
+  opentelemetry:
+    tracing:
+      export:
+        otlp:
+          endpoint: ${OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}

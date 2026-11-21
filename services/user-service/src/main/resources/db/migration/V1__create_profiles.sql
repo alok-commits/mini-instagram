@@ -1,0 +1,9 @@
+CREATE TABLE user_profiles (
+ id UUID PRIMARY KEY,
+ keycloak_user_id VARCHAR(100) NOT NULL UNIQUE,
+ username VARCHAR(80) NOT NULL UNIQUE,
+ display_name VARCHAR(120) NOT NULL,
+ bio VARCHAR(300),
+ created_at TIMESTAMPTZ NOT NULL,
+ updated_at TIMESTAMPTZ NOT NULL
+);

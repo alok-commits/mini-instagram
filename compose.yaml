@@ -1,0 +1,252 @@
+name: mini-instagram
+x-service-base: &java-base
+  restart: unless-stopped
+  networks: [application, database, observability]
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  volumes:
+    - application_logs:/app/logs
+  depends_on:
+    postgres: {condition: service_healthy}
+    keycloak: {condition: service_started}
+    logs-init: {condition: service_completed_successfully}
+  environment: &java-env
+    JWT_ISSUER: ${KEYCLOAK_PUBLIC_URL}/realms/mini-instagram
+    JWT_JWKS: http://keycloak:8080/realms/mini-instagram/protocol/openid-connect/certs
+    OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    TRACE_SAMPLE_RATE: ${TRACE_SAMPLE_RATE:-1.0}
+    MANAGEMENT_OTLP_METRICS_EXPORT_ENABLED: 'false'
+    SPRING_PROFILES_ACTIVE: docker
+  deploy:
+    resources:
+      limits: {memory: 650M}
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    restart: unless-stopped
+    networks: [database, pgadmin_access]
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Run python3 scripts/bootstrap.py first}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Missing}
+      USER_DB_PASSWORD: ${USER_DB_PASSWORD:?Missing}
+      POST_DB_PASSWORD: ${POST_DB_PASSWORD:?Missing}
+      LIKE_DB_PASSWORD: ${LIKE_DB_PASSWORD:?Missing}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init-databases.sh:/docker-entrypoint-initdb.d/01-init-databases.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt: [no-new-privileges:true]
+  redis:
+    image: redis:7.4.2-alpine
+    restart: unless-stopped
+    command: [redis-server, --appendonly, 'no', --maxmemory, 128mb, --maxmemory-policy, noeviction]
+    networks: [application]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    security_opt: [no-new-privileges:true]
+  logs-init:
+    image: busybox:1.37.0
+    command: [sh, -c, 'chown -R 10001:10001 /logs']
+    volumes: [application_logs:/logs]
+    restart: 'no'
+    networks: [observability]
+  keycloak-realm-init:
+    image: busybox:1.37.0
+    command: [sh, -c, 'cp /input/mini-instagram-realm.json /output/mini-instagram-realm.json && chmod 0644 /output/mini-instagram-realm.json']
+    volumes:
+      - ./infrastructure/keycloak/generated:/input:ro
+      - keycloak_import:/output
+    restart: 'no'
+    networks: [database]
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.2
+    command: [start-dev, --import-realm]
+    restart: unless-stopped
+    networks: [database, application, edge]
+    ports: ['127.0.0.1:8180:8080']
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak_db
+      KC_DB_USERNAME: keycloak_app
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Missing}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Missing}
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8180}
+      KC_HTTP_ENABLED: 'true'
+      KC_HEALTH_ENABLED: 'true'
+      KC_METRICS_ENABLED: 'true'
+    volumes:
+      - keycloak_import:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      keycloak-realm-init: {condition: service_completed_successfully}
+    security_opt: [no-new-privileges:true]
+  api-gateway:
+    <<: *java-base
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_PATH: services/api-gateway}
+    ports: ['127.0.0.1:8080:8080']
+    networks: [edge, application, observability]
+    depends_on:
+      keycloak: {condition: service_started}
+      redis: {condition: service_healthy}
+      logs-init: {condition: service_completed_successfully}
+    environment:
+      <<: *java-env
+      REDIS_HOST: redis
+      FRONTEND_ORIGIN: ${PUBLIC_WEB_ORIGIN:-http://localhost:5173}
+      GATEWAY_TRUST_PROXY: 'false'
+    deploy:
+      resources:
+        limits: {memory: 650M}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:8080/actuator/health/readiness]
+      interval: 15s
+      timeout: 5s
+      start_period: 75s
+      retries: 5
+  user-service:
+    <<: *java-base
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_PATH: services/user-service}
+    environment:
+      <<: *java-env
+      DB_URL: jdbc:postgresql://postgres:5432/user_db
+      DB_USER: user_app
+      DB_PASSWORD: ${USER_DB_PASSWORD:?Missing}
+    deploy:
+      resources:
+        limits: {memory: 650M}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:8081/actuator/health/readiness]
+      interval: 15s
+      timeout: 5s
+      start_period: 75s
+      retries: 5
+  post-service:
+    <<: *java-base
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_PATH: services/post-service}
+    environment:
+      <<: *java-env
+      DB_URL: jdbc:postgresql://postgres:5432/post_db
+      DB_USER: post_app
+      DB_PASSWORD: ${POST_DB_PASSWORD:?Missing}
+    deploy:
+      resources:
+        limits: {memory: 650M}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:8082/actuator/health/readiness]
+      interval: 15s
+      timeout: 5s
+      start_period: 75s
+      retries: 5
+  like-service:
+    <<: *java-base
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args: {SERVICE_PATH: services/like-service}
+    environment:
+      <<: *java-env
+      DB_URL: jdbc:postgresql://postgres:5432/like_db
+      DB_USER: like_app
+      DB_PASSWORD: ${LIKE_DB_PASSWORD:?Missing}
+      LIKE_CLIENT_SECRET: ${LIKE_CLIENT_SECRET:?Missing}
+      KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/mini-instagram/protocol/openid-connect/token
+      POST_SERVICE_URL: http://post-service:8082
+    deploy:
+      resources:
+        limits: {memory: 650M}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:8083/actuator/health/readiness]
+      interval: 15s
+      timeout: 5s
+      start_period: 75s
+      retries: 5
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.128.0
+    command: [--config=/etc/otelcol/config.yaml]
+    restart: unless-stopped
+    networks: [observability]
+    volumes:
+      - ./infrastructure/otel/collector.yaml:/etc/otelcol/config.yaml:ro
+  tempo:
+    image: grafana/tempo:2.9.0
+    command: [-config.file=/etc/tempo.yaml]
+    restart: unless-stopped
+    networks: [observability]
+    volumes:
+      - ./infrastructure/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+  loki:
+    image: grafana/loki:3.5.0
+    command: [-config.file=/etc/loki/config.yaml]
+    restart: unless-stopped
+    networks: [observability]
+    volumes:
+      - ./infrastructure/loki/loki.yaml:/etc/loki/config.yaml:ro
+      - loki_data:/loki
+  fluent-bit:
+    image: fluent/fluent-bit:3.2.2
+    restart: unless-stopped
+    networks: [observability]
+    depends_on: [loki, logs-init]
+    volumes:
+      - application_logs:/app/logs:ro
+      - ./infrastructure/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./infrastructure/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+      - fluentbit_state:/fluent-bit/state
+  prometheus:
+    image: prom/prometheus:v3.4.1
+    command: [--config.file=/etc/prometheus/prometheus.yaml, --storage.tsdb.retention.time=7d]
+    restart: unless-stopped
+    networks: [application, observability]
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./infrastructure/prometheus/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - prometheus_data:/prometheus
+  grafana:
+    image: grafana/grafana:12.1.0
+    restart: unless-stopped
+    networks: [observability, edge]
+    ports: ['127.0.0.1:3000:3000']
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Missing}
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+networks:
+  edge: {}
+  application: {internal: true}
+  database: {internal: true}
+  observability: {internal: true}
+  pgadmin_access: {}
+volumes:
+  keycloak_import: {}
+  postgres_data: {}
+  application_logs: {}
+  tempo_data: {}
+  loki_data: {}
+  prometheus_data: {}
+  grafana_data: {}
+  fluentbit_state: {}

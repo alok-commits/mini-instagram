@@ -1,0 +1,29 @@
+.env
+**/.env.local
+**/target/
+**/node_modules/
+**/dist/
+.mvn-cache/
+.idea/
+.vscode/
+infrastructure/keycloak/generated/
+infrastructure/nginx/certs/
+*.log
+__pycache__/
+
+
+# Additional environment files
+.env.*
+!.env.example
+!.env.sample
+
+# Private keys and secrets
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Database backups
+*.dump
+*.backup
+*.sql.gz

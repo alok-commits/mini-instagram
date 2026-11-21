@@ -1,0 +1,63 @@
+limit_req_zone $binary_remote_addr zone=keycloak_tokens:10m rate=5r/s;
+server {
+  listen 80;
+  server_name ${PUBLIC_API_HOST} ${PUBLIC_AUTH_HOST} ${PUBLIC_WEB_HOST};
+  return 301 https://$host$request_uri;
+}
+server {
+  listen 443 ssl;
+  server_name ${PUBLIC_API_HOST};
+  ssl_certificate /etc/nginx/certs/fullchain.pem;
+  ssl_certificate_key /etc/nginx/certs/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  server_tokens off;
+  client_max_body_size 1m;
+  location / {
+    proxy_pass http://api-gateway:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Client-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_connect_timeout 3s;
+    proxy_read_timeout 15s;
+  }
+}
+server {
+  listen 443 ssl;
+  server_name ${PUBLIC_AUTH_HOST};
+  ssl_certificate /etc/nginx/certs/fullchain.pem;
+  ssl_certificate_key /etc/nginx/certs/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  server_tokens off;
+  location ^~ /admin/ { return 403; }
+  location ~ ^/realms/[^/]+/protocol/openid-connect/token$ {
+    limit_req zone=keycloak_tokens burst=20 nodelay;
+    proxy_pass http://keycloak:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Port 443;
+  }
+  location / {
+    proxy_pass http://keycloak:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Port 443;
+  }
+}
+server {
+  listen 443 ssl;
+  server_name ${PUBLIC_WEB_HOST};
+  ssl_certificate /etc/nginx/certs/fullchain.pem;
+  ssl_certificate_key /etc/nginx/certs/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  server_tokens off;
+  location / {
+    proxy_pass http://frontend:80;
+    proxy_set_header Host $host;
+  }
+}
